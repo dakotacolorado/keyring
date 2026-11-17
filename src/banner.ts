@@ -43,6 +43,8 @@ const MARK = Array.from({ length: MARK_PIXELS.length / 2 }, (_, row) =>
 
 const WIDTH = Math.max(...LETTERS.map((line) => line.length));
 export const WORDMARK = LETTERS.map((line, i) => `${line.padEnd(WIDTH)}  ${MARK[i]}`.trimEnd()).join("\n");
+/** The block letters alone, for the page. */
+export const LETTERS_ONLY = LETTERS.join("\n");
 
 /** keyring's line, verbatim. */
 export const TAGLINE = "Every agent's keys on one ring, and only the ones it may use.";
