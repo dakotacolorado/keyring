@@ -1,0 +1,240 @@
+{
+  "instructions": "keyring: Every agent's keys on one ring, and only the ones it may use. It keeps the platform's secrets (Claude logins, GitHub and AWS credentials, service tokens) sealed under one master key, and agency sets each session's environment from the grants made here as it starts the session.\n\n- list_secrets shows each secret's name, description, version and at most its last 4 characters. No tool ever answers a value.\n- put_secret makes a secret or gives it a new value; delete_secret removes it and its grants.\n- grant gives a secret to a target as an environment variable: all, role:<name>, agent:<name> or label:<agency host label>. Of two grants for one variable, the most specific wins: agent, then role, then label, then all. list_grants and revoke (by the grant's id) go with it. These three need an admin token.\n- list_audit shows who resolved which variables for which agent, and every write, newest first, without values.\n- Every tool takes the token this server was connected with.",
+  "tools": [
+    {
+      "name": "list_secrets",
+      "title": "List secrets",
+      "description": "Every secret, by name, without its value.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "put_secret",
+      "title": "Put a secret",
+      "description": "Makes a secret, or gives it a new value as its next version. The value is sealed with AES-256-GCM under the master key before it is stored, and the answer holds none of it but `hint`.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+            "description": "The secret's name: letters, digits, `_`, `.` and `-`, at most 128."
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "description": "The value, at most 65,536 characters: a token, or a credentials file's text. Sealed before it is stored, and never answered but by `ResolveSecrets`."
+          },
+          "description": {
+            "description": "What it is, and what it is for. Left out, it keeps the one it had; null clears it.",
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "delete_secret",
+      "title": "Delete a secret",
+      "description": "Deletes a secret, its value and every grant of it.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+            "description": "The secret's name: letters, digits, `_`, `.` and `-`, at most 128."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_grants",
+      "title": "List grants",
+      "description": "Grants matching every filter given, oldest first. Admin tokens only.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "secret": {
+            "description": "Only the grants of this secret.",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+          },
+          "target": {
+            "description": "Only the grants for this target.",
+            "type": "string",
+            "pattern": "^(all|(agent|role|label):[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127})$"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "grant",
+      "title": "Grant a secret",
+      "description": "Grants a secret to sessions matching `target`, as `variable`. One target sets one variable from one grant: revoke the old one to change it. Admin tokens only.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "secret": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+            "description": "The secret to set the variable to."
+          },
+          "variable": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+            "description": "The environment variable it sets."
+          },
+          "target": {
+            "type": "string",
+            "pattern": "^(all|(agent|role|label):[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127})$",
+            "description": "Whom it is for: `all`, `agent:<name>`, `role:<name>` or `label:<agency host label>`."
+          }
+        },
+        "required": [
+          "secret",
+          "variable",
+          "target"
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "revoke",
+      "title": "Revoke a grant",
+      "description": "Revokes a grant: sessions resolved after it no longer get its variable from it. Admin tokens only.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "description": "The grant's id."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_audit",
+      "title": "List audit events",
+      "description": "Every resolve and every write of a secret or grant, newest first, a page at a time: while `nextToken` is not null, pass it for the next page. No event holds a value.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "agent": {
+            "description": "Only resolves for this agent.",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$"
+          },
+          "action": {
+            "description": "Only this operation.",
+            "type": "string",
+            "enum": [
+              "ResolveSecrets",
+              "PutSecret",
+              "DeleteSecret",
+              "CreateGrant",
+              "DeleteGrant"
+            ]
+          },
+          "maxResults": {
+            "default": 100,
+            "description": "The most to answer. Default: 100.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "nextToken": {
+            "description": "The `nextToken` a page answered, for the page after it.",
+            "type": "string",
+            "maxLength": 40
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    }
+  ]
+}

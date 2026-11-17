@@ -1,0 +1,9 @@
+node_modules/
+*.tsbuildinfo
+.DS_Store
+.env
+.claude/*
+!.claude/skills/
+dist/
+.keyring-dev*
+scratch/

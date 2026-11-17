@@ -1,0 +1,62 @@
+{
+  "name": "@dakotajp/keyring",
+  "version": "0.1.0",
+  "description": "Keeps the platform's secrets encrypted, and hands each agent session the ones granted to it.",
+  "keywords": [
+    "secrets",
+    "encryption",
+    "mcp",
+    "sqlite",
+    "api"
+  ],
+  "homepage": "https://github.com/dakotacolorado/keyring",
+  "bugs": {
+    "url": "https://github.com/dakotacolorado/keyring/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dakotacolorado/keyring.git"
+  },
+  "license": "MIT",
+  "author": "Dakota Parker",
+  "type": "module",
+  "bin": {
+    "keyring": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "openapi.json",
+    "mcp.json"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node src/cli.ts serve --dev --db .keyring-dev/keyring.db",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && node src/build.ts dist/build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "integ": "node src/integ.ts",
+    "spec": "node src/spec.ts && redocly build-docs openapi.json -o docs/index.html",
+    "prepare": "npm run build && (git config core.hooksPath .githooks 2>/dev/null || true)",
+    "prepack": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@asteasolutions/zod-to-openapi": "^9.1.0",
+    "@hono/node-server": "^2.1.8",
+    "@hono/zod-openapi": "^1.6.3",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "hono": "^4.13.19",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@redocly/cli": "^2.79.0",
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  }
+}

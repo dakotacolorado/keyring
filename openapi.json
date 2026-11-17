@@ -1,0 +1,1138 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "version": "2026-11-17",
+    "title": "keyring",
+    "description": "Keeps the platform's secrets encrypted, and hands each agent session the ones granted to it. **The person** and **agents** put the platform's secrets here (a Claude login, a GitHub token, an AWS credentials file) and grant each to the sessions that need it, as an environment variable. **agency** resolves a session's variables as it starts it, so no host keeps a copy.\n\n- **Secrets:** `PutSecret` seals a value with AES-256-GCM under the master key and keeps it as the secret's next version. `ListSecrets` and `GetSecret` answer metadata, with at most the value's last 4 characters; `DeleteSecret` removes it and its grants.\n- **Grants:** `CreateGrant` sets `variable` to a secret for `all`, `role:<name>`, `agent:<name>` or `label:<host label>`. Admin tokens only.\n- **Resolve:** `ResolveSecrets` answers `{variables}` for an agent, its role and its host's labels; the most specific grant of each variable wins. Resolver tokens only, and the only operation that answers a value.\n- **Audit:** `ListAuditEvents` lists every resolve and write, with names but never values.\n\n**Auth:** `Authorization: Bearer <token>` on everything but `GetHealth` and the docs. A token is made with `keyring token create <name>`; `--admin` lets it manage grants, `--resolver` lets it resolve. `KEYRING_ADMIN_TOKEN` is one more, named `admin`, an admin token that cannot resolve.\n\n**Who:** a write's `createdBy` and `updatedBy` are the caller's `x-actor` header, when it gives one, else its token's name; the audit records both.\n\n**Errors:** `{code, message}`, where `code` is an AWS-style exception name such as `ValidationException` or `AccessDeniedException`."
+  },
+  "tags": [
+    {
+      "name": "Secrets",
+      "description": "Put, list and delete secrets, never answering a value."
+    },
+    {
+      "name": "Grants",
+      "description": "Which sessions get which secret, as which variable. Admin tokens only."
+    },
+    {
+      "name": "Resolve",
+      "description": "A session's variables, with their values. Resolver tokens only."
+    },
+    {
+      "name": "Audit",
+      "description": "What was resolved and written, without values."
+    },
+    {
+      "name": "Platform",
+      "description": "Health."
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A named token from `keyring token create`, or `KEYRING_ADMIN_TOKEN`."
+      }
+    },
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "Always true."
+          },
+          "version": {
+            "type": "string",
+            "description": "Package version."
+          },
+          "commit": {
+            "type": "string",
+            "description": "Commit it was built from."
+          }
+        },
+        "required": [
+          "ok",
+          "version",
+          "commit"
+        ]
+      },
+      "Secret": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+            "description": "The secret's name: letters, digits, `_`, `.` and `-`, at most 128.",
+            "example": "CLAUDE_CODE_OAUTH_TOKEN-main"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "What it is, and what it is for.",
+            "example": "The Claude login agents run under."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "How many times its value was put: 1 when made, one more each put."
+          },
+          "hint": {
+            "type": "string",
+            "nullable": true,
+            "description": "Its value's last 4 characters, after `…`, when the value is at least 16 long; else null. Never more of it.",
+            "example": "…x9Qa"
+          },
+          "createdBy": {
+            "type": "string",
+            "description": "Who made it: the caller's `x-actor`, else its token's name."
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "Made at (ISO 8601)."
+          },
+          "updatedBy": {
+            "type": "string",
+            "description": "Who put its current value."
+          },
+          "updatedAt": {
+            "type": "string",
+            "description": "Its current value put at (ISO 8601)."
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "version",
+          "hint",
+          "createdBy",
+          "createdAt",
+          "updatedBy",
+          "updatedAt"
+        ],
+        "description": "A secret, without its value: only `ResolveSecrets` answers a value."
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "ValidationException",
+              "UnauthorizedException",
+              "AccessDeniedException",
+              "ResourceNotFoundException",
+              "ConflictException",
+              "InternalServerException"
+            ],
+            "description": "Exception name."
+          },
+          "message": {
+            "type": "string",
+            "description": "What went wrong."
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "description": "Every error's body."
+      },
+      "PutSecretInput": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "description": "The value, at most 65,536 characters: a token, or a credentials file's text. Sealed before it is stored, and never answered but by `ResolveSecrets`."
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "What it is, and what it is for. Left out, it keeps the one it had; null clears it.",
+            "example": "The Claude login agents run under."
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "ListSecretsResponse": {
+        "type": "object",
+        "properties": {
+          "secrets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Secret"
+            },
+            "description": "Every secret, by name."
+          }
+        },
+        "required": [
+          "secrets"
+        ]
+      },
+      "Grant": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The grant's id."
+          },
+          "secret": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+            "description": "The secret it sets the variable to.",
+            "example": "CLAUDE_CODE_OAUTH_TOKEN-main"
+          },
+          "variable": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+            "description": "The environment variable it sets.",
+            "example": "CLAUDE_CODE_OAUTH_TOKEN"
+          },
+          "target": {
+            "type": "string",
+            "pattern": "^(all|(agent|role|label):[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127})$",
+            "description": "Whom it is for: `all`, `agent:<name>`, `role:<name>` or `label:<agency host label>`.",
+            "example": "role:implementer"
+          },
+          "createdBy": {
+            "type": "string",
+            "description": "Who made it."
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "Made at (ISO 8601)."
+          }
+        },
+        "required": [
+          "id",
+          "secret",
+          "variable",
+          "target",
+          "createdBy",
+          "createdAt"
+        ],
+        "description": "That sessions matching `target` get `variable` set to `secret`'s value."
+      },
+      "CreateGrantInput": {
+        "type": "object",
+        "properties": {
+          "secret": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+            "description": "The secret to set the variable to.",
+            "example": "CLAUDE_CODE_OAUTH_TOKEN-main"
+          },
+          "variable": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+            "description": "The environment variable it sets.",
+            "example": "CLAUDE_CODE_OAUTH_TOKEN"
+          },
+          "target": {
+            "type": "string",
+            "pattern": "^(all|(agent|role|label):[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127})$",
+            "description": "Whom it is for: `all`, `agent:<name>`, `role:<name>` or `label:<agency host label>`.",
+            "example": "role:implementer"
+          }
+        },
+        "required": [
+          "secret",
+          "variable",
+          "target"
+        ]
+      },
+      "ListGrantsResponse": {
+        "type": "object",
+        "properties": {
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Grant"
+            },
+            "description": "The grants, oldest first."
+          }
+        },
+        "required": [
+          "grants"
+        ]
+      },
+      "ResolveSecretsResponse": {
+        "type": "object",
+        "properties": {
+          "variables": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Each variable's value, by name.",
+            "example": {
+              "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-…"
+            }
+          }
+        },
+        "required": [
+          "variables"
+        ]
+      },
+      "ResolveSecretsInput": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$",
+            "description": "The agent's name, which `agent:<name>` grants match.",
+            "example": "implementer-3073d56b"
+          },
+          "role": {
+            "type": "string",
+            "nullable": true,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$",
+            "description": "Its role, which `role:<name>` grants match.",
+            "example": "implementer"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$"
+            },
+            "maxItems": 50,
+            "default": [],
+            "description": "Its host's agency labels, which `label:<label>` grants match.",
+            "example": [
+              "rtx-4090"
+            ]
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "ListAuditEventsResponse": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEvent"
+            },
+            "description": "This page's events, newest first."
+          },
+          "nextToken": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass it as `nextToken` for the next page; null on the last."
+          }
+        },
+        "required": [
+          "events",
+          "nextToken"
+        ]
+      },
+      "AuditEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The event's id, larger for later ones."
+          },
+          "at": {
+            "type": "string",
+            "description": "Done at (ISO 8601)."
+          },
+          "token": {
+            "type": "string",
+            "description": "The name of the token that did it."
+          },
+          "actor": {
+            "type": "string",
+            "nullable": true,
+            "description": "The `x-actor` header it sent, if any."
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "ResolveSecrets",
+              "PutSecret",
+              "DeleteSecret",
+              "CreateGrant",
+              "DeleteGrant"
+            ],
+            "description": "The operation done."
+          },
+          "secret": {
+            "type": "string",
+            "nullable": true,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+            "description": "The secret put or deleted, or the grant's; null for a resolve.",
+            "example": "CLAUDE_CODE_OAUTH_TOKEN-main"
+          },
+          "target": {
+            "type": "string",
+            "nullable": true,
+            "description": "The grant's target; null but for a grant made or revoked."
+          },
+          "agent": {
+            "type": "string",
+            "nullable": true,
+            "description": "Whom a resolve was for; null for anything else."
+          },
+          "role": {
+            "type": "string",
+            "nullable": true,
+            "description": "The role a resolve was given."
+          },
+          "labels": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "The host labels a resolve was given."
+          },
+          "variables": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "The variables a resolve answered, or the grant's one: names only, never values."
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "token",
+          "actor",
+          "action",
+          "secret",
+          "target",
+          "agent",
+          "role",
+          "labels",
+          "variables"
+        ],
+        "description": "One write or resolve: who did it and to what. It never holds a value."
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "GetHealth",
+        "tags": [
+          "Platform"
+        ],
+        "summary": "Get health",
+        "responses": {
+          "200": {
+            "description": "Service is up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/secrets/{name}": {
+      "put": {
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Secrets"
+        ],
+        "operationId": "PutSecret",
+        "summary": "Put a secret",
+        "description": "Makes a secret, or gives it a new value as its next version. The value is sealed with AES-256-GCM under the master key before it is stored, and the answer holds none of it but `hint`.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+              "description": "The secret's name: letters, digits, `_`, `.` and `-`, at most 128.",
+              "example": "CLAUDE_CODE_OAUTH_TOKEN-main"
+            },
+            "required": true,
+            "description": "The secret's name: letters, digits, `_`, `.` and `-`, at most 128.",
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "description": "Its value, and what it is.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutSecretInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Its new version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Secret"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Made.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Secret"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationException: The request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Secrets"
+        ],
+        "operationId": "GetSecret",
+        "summary": "Get a secret",
+        "description": "A secret's metadata, without its value.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+              "description": "The secret's name: letters, digits, `_`, `.` and `-`, at most 128.",
+              "example": "CLAUDE_CODE_OAUTH_TOKEN-main"
+            },
+            "required": true,
+            "description": "The secret's name: letters, digits, `_`, `.` and `-`, at most 128.",
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The secret.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Secret"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationException: The request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "ResourceNotFoundException: No secret has that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Secrets"
+        ],
+        "operationId": "DeleteSecret",
+        "summary": "Delete a secret",
+        "description": "Deletes a secret, its value and every grant of it.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+              "description": "The secret's name: letters, digits, `_`, `.` and `-`, at most 128.",
+              "example": "CLAUDE_CODE_OAUTH_TOKEN-main"
+            },
+            "required": true,
+            "description": "The secret's name: letters, digits, `_`, `.` and `-`, at most 128.",
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The secret, as it was.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Secret"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationException: The request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "ResourceNotFoundException: No secret has that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/secrets": {
+      "get": {
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Secrets"
+        ],
+        "operationId": "ListSecrets",
+        "summary": "List secrets",
+        "description": "Every secret, by name, without its value.",
+        "responses": {
+          "200": {
+            "description": "The secrets.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListSecretsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationException: The request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/grants": {
+      "post": {
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Grants"
+        ],
+        "operationId": "CreateGrant",
+        "summary": "Create a grant",
+        "description": "Grants a secret to sessions matching `target`, as `variable`. One target sets one variable from one grant: revoke the old one to change it. Admin tokens only.",
+        "requestBody": {
+          "description": "The grant.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGrantInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Made.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Grant"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationException: The request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "AccessDeniedException: The token is not an admin token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "ResourceNotFoundException: No secret has that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictException: The target already has a grant that sets this variable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Grants"
+        ],
+        "operationId": "ListGrants",
+        "summary": "List grants",
+        "description": "Grants matching every filter given, oldest first. Admin tokens only.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+              "description": "Only the grants of this secret.",
+              "example": "CLAUDE_CODE_OAUTH_TOKEN-main"
+            },
+            "required": false,
+            "description": "Only the grants of this secret.",
+            "name": "secret",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(all|(agent|role|label):[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127})$",
+              "description": "Only the grants for this target.",
+              "example": "role:implementer"
+            },
+            "required": false,
+            "description": "Only the grants for this target.",
+            "name": "target",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The grants.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListGrantsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationException: The request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "AccessDeniedException: The token is not an admin token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/grants/{id}": {
+      "delete": {
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Grants"
+        ],
+        "operationId": "DeleteGrant",
+        "summary": "Delete a grant",
+        "description": "Revokes a grant: sessions resolved after it no longer get its variable from it. Admin tokens only.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The grant's id."
+            },
+            "required": true,
+            "description": "The grant's id.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The grant, as it was.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Grant"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationException: The request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "AccessDeniedException: The token is not an admin token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "ResourceNotFoundException: No grant has that id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/resolve": {
+      "post": {
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Resolve"
+        ],
+        "operationId": "ResolveSecrets",
+        "summary": "Resolve secrets",
+        "description": "The environment a session gets as it starts: each variable granted to its agent, its role, one of its host's labels, or all, set to its secret's current value. Of two grants for one variable, the more specific wins: agent, then role, then label, then all; of two labels' grants, the older. Recorded in the audit with the variables' names, never their values. Resolver tokens only (`keyring token create <name> --resolver`).",
+        "requestBody": {
+          "description": "Whom the session is for.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveSecretsInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The session's variables.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolveSecretsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationException: The request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "AccessDeniedException: The token is not a resolver token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit": {
+      "get": {
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Audit"
+        ],
+        "operationId": "ListAuditEvents",
+        "summary": "List audit events",
+        "description": "Every resolve and every write of a secret or grant, newest first, a page at a time: while `nextToken` is not null, pass it for the next page. No event holds a value.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$",
+              "description": "Only resolves for this agent."
+            },
+            "required": false,
+            "description": "Only resolves for this agent.",
+            "name": "agent",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ResolveSecrets",
+                "PutSecret",
+                "DeleteSecret",
+                "CreateGrant",
+                "DeleteGrant"
+              ],
+              "description": "Only this operation."
+            },
+            "required": false,
+            "description": "Only this operation.",
+            "name": "action",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100,
+              "description": "The most to answer. Default: 100."
+            },
+            "required": false,
+            "description": "The most to answer. Default: 100.",
+            "name": "maxResults",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 40,
+              "description": "The `nextToken` a page answered, for the page after it."
+            },
+            "required": false,
+            "description": "The `nextToken` a page answered, for the page after it.",
+            "name": "nextToken",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of events.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListAuditEventsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationException: The request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
