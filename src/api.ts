@@ -2,15 +2,20 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { Context, Next } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { readFileSync } from "node:fs";
-import { MARK_ICON, SUMMARY } from "./banner.ts";
+import { LETTERS_ONLY, MARK_ICON, MARK_PIXELS, SUMMARY, TAGLINE } from "./banner.ts";
 import { KeyError } from "./crypto.ts";
 import { RequestError } from "./domain.ts";
 import { DOCS_URL, mcpServer, type Call } from "./mcp.ts";
 import * as routes from "./schema.ts";
 import { ERROR_CODES, type ErrorStatus } from "./schema.ts";
 import type { Keyring, Who } from "./service.ts";
+
+/** The browser's session cookie. */
+export const SESSION_COOKIE = "keyring_session";
+const SESSION_DAYS = 90;
 
 export const SPEC_PATH = "/openapi.json";
 
@@ -26,6 +31,8 @@ export const OVERVIEW = `${SUMMARY} **The person** and **agents** put the platfo
 - **Audit:** \`ListAuditEvents\` lists every resolve and write, with names but never values.
 
 **Auth:** \`Authorization: Bearer <token>\` on everything but \`GetHealth\` and the docs. A token is made with \`keyring token create <name>\`; \`--admin\` lets it manage grants, \`--resolver\` lets it resolve. \`KEYRING_ADMIN_TOKEN\` is one more, named \`admin\`, an admin token that cannot resolve.
+
+**Page:** \`/\` is keyring's own page, signed in by \`#signin=<KEYRING_ADMIN_TOKEN>\`: \`CreateSession\` turns the token into a cookie, which every call but \`/mcp\` then takes, a write by it needing \`x-keyring: 1\`. The page lists, puts and deletes secrets and grants, and never shows a value.
 
 **Who:** a write's \`createdBy\` and \`updatedBy\` are the caller's \`x-actor\` header, when it gives one, else its token's name; the audit records both.
 
@@ -48,6 +55,8 @@ export interface Caller {
   name: string;
   admin: boolean;
   resolver: boolean;
+  /** A bearer token in the request, or a browser's session cookie alone. */
+  by: "token" | "session";
 }
 
 type Env = { Variables: { caller: Caller } };
@@ -83,20 +92,36 @@ export class KeyringApi {
     const secret = /^Bearer (.+)$/.exec(c.req.header("authorization") ?? "")?.[1];
     if (!secret) return null;
     const admin = this.options.adminToken;
-    if (admin && timingSafeEqual(digest(secret), digest(admin))) return { name: "admin", admin: true, resolver: false };
+    if (admin && timingSafeEqual(digest(secret), digest(admin))) return { name: "admin", admin: true, resolver: false, by: "token" };
     const token = this.keyring.store.tokenFor(secret, new Date());
-    return token && { name: token.name, admin: token.admin, resolver: token.resolver };
+    return token && { name: token.name, admin: token.admin, resolver: token.resolver, by: "token" };
+  }
+
+  /** What a session cookie holds: a keyed hash of the admin token, so it is good only while that token is. */
+  private sessionValue(): string | null {
+    const admin = this.options.adminToken;
+    return admin && createHmac("sha256", admin).update("keyring session").digest("hex");
+  }
+
+  private sessionCaller(c: Context): Caller | null {
+    const given = getCookie(c, SESSION_COOKIE);
+    const value = this.sessionValue();
+    if (!given || !value || !timingSafeEqual(digest(given), digest(value))) return null;
+    return { name: "admin", admin: true, resolver: false, by: "session" };
   }
 
   private auth(): void {
-    const signedIn = async (c: Context<Env>, next: Next) => {
-      const caller = this.caller(c);
-      if (!caller) return fail(c, 401, "No bearer token, or it is wrong or revoked.");
+    const signedIn = (allowSession: boolean) => async (c: Context<Env>, next: Next) => {
+      const caller = this.caller(c) ?? (allowSession ? this.sessionCaller(c) : null);
+      if (!caller) return fail(c, 401, "No bearer token or session, or it is wrong, revoked or expired.");
+      // A cookie goes with any request a page on another site makes; a header such a page cannot add shows it is ours.
+      if (caller.by === "session" && !["GET", "HEAD"].includes(c.req.method) && c.req.header("x-keyring") !== "1")
+        return fail(c, 403, "A write signed in by the session cookie alone must send the header x-keyring: 1.");
       c.set("caller", caller);
       await next();
     };
-    this.hono.use("/api/*", signedIn);
-    this.hono.use("/mcp", signedIn);
+    this.hono.use("/api/*", signedIn(true));
+    this.hono.use("/mcp", signedIn(false));
     this.hono.use("/api/grants", only("admin"));
     this.hono.use("/api/grants/*", only("admin"));
     this.hono.use("/api/resolve", only("resolver"));
@@ -110,6 +135,19 @@ export class KeyringApi {
     };
 
     app.openapi(routes.healthRoute, (c) => c.json({ ok: true as const, ...this.about }, 200));
+
+    app.openapi(routes.createSessionRoute, (c) => {
+      const value = this.sessionValue();
+      const caller = c.get("caller");
+      if (!value || caller.by !== "token" || caller.name !== "admin") return c.json({ code: ERROR_CODES[403], message: "Only KEYRING_ADMIN_TOKEN signs a browser in." }, 403);
+      const maxAge = SESSION_DAYS * 86400;
+      setCookie(c, SESSION_COOKIE, value, { httpOnly: true, secure: true, sameSite: "Lax", path: "/", maxAge });
+      return c.json({ name: "admin" as const, expiresAt: new Date(Date.now() + maxAge * 1000).toISOString() }, 200);
+    });
+    app.openapi(routes.deleteSessionRoute, (c) => {
+      deleteCookie(c, SESSION_COOKIE, { path: "/", secure: true });
+      return c.json({ ok: true as const }, 200);
+    });
 
     app.openapi(routes.putSecretRoute, (c) => {
       const { secret, created } = this.keyring.put(c.req.valid("param").name, c.req.valid("json"), who(c));
@@ -174,8 +212,14 @@ export class KeyringApi {
       if (!files.has(path)) files.set(path, readFileSync(new URL(`../${path}`, import.meta.url), "utf8"));
       return files.get(path)!;
     };
-    const page = (path: string, type: string) => (c: Context) => c.body(file(path), 200, { "content-type": `${type}; charset=utf-8` });
-    this.hono.get("/", (c) => c.redirect("/docs/api"));
+    const page = (path: string, type: string, extra: Record<string, string> = {}) => (c: Context) => c.body(file(path), 200, { "content-type": `${type}; charset=utf-8`, ...extra });
+    const SHELL_CSP = "default-src 'self'; img-src 'self'; object-src 'none'; frame-ancestors 'none'";
+    this.hono.get("/", page("ui/index.html", "text/html", { "content-security-policy": SHELL_CSP }));
+    this.hono.get("/ui/app.js", page("ui/app.js", "text/javascript"));
+    this.hono.get("/ui/style.css", page("ui/style.css", "text/css"));
+    // The page's words and mark are banner.ts's own, so the terminal, the page and the tab cannot differ.
+    const words = Object.entries({ LETTERS: LETTERS_ONLY, MARK_PIXELS, TAGLINE, SUMMARY }).map(([name, value]) => `export const ${name} = ${JSON.stringify(value)};\n`).join("");
+    this.hono.get("/ui/banner.js", (c) => c.body(words, 200, { "content-type": "text/javascript; charset=utf-8" }));
     this.hono.get("/favicon.svg", (c) => c.body(MARK_ICON, 200, { "content-type": "image/svg+xml; charset=utf-8" }));
     this.hono.get("/docs/api", page("docs/index.html", "text/html"));
     this.hono.get("/mcp.json", page("mcp.json", "application/json"));
@@ -189,6 +233,12 @@ export class KeyringApi {
       scheme: "bearer",
       description: "A named token from `keyring token create`, or `KEYRING_ADMIN_TOKEN`.",
     });
+    this.hono.openAPIRegistry.registerComponent("securitySchemes", "sessionCookie", {
+      type: "apiKey",
+      in: "cookie",
+      name: SESSION_COOKIE,
+      description: "A browser's session, from `CreateSession`. A write signed in by it alone must also send `x-keyring: 1`.",
+    });
     this.hono.doc(SPEC_PATH, {
       openapi: "3.1.0",
       info: { version: API_VERSION, title: "keyring", description: OVERVIEW },
@@ -197,6 +247,7 @@ export class KeyringApi {
         { name: "Grants", description: "Which sessions get which secret, as which variable. Admin tokens only." },
         { name: "Resolve", description: "A session's variables, with their values. Resolver tokens only." },
         { name: "Audit", description: "What was resolved and written, without values." },
+        { name: "Sessions", description: "Signing a browser in, for keyring's own page." },
         { name: "Platform", description: "Health." },
       ],
     });

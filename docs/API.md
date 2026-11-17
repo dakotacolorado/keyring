@@ -11,6 +11,8 @@ Keeps the platform's secrets encrypted, and hands each agent session the ones gr
 
 **Auth:** `Authorization: Bearer <token>` on everything but `GetHealth` and the docs. A token is made with `keyring token create <name>`; `--admin` lets it manage grants, `--resolver` lets it resolve. `KEYRING_ADMIN_TOKEN` is one more, named `admin`, an admin token that cannot resolve.
 
+**Page:** `/` is keyring's own page, signed in by `#signin=<KEYRING_ADMIN_TOKEN>`: `CreateSession` turns the token into a cookie, which every call but `/mcp` then takes, a write by it needing `x-keyring: 1`. The page lists, puts and deletes secrets and grants, and never shows a value.
+
 **Who:** a write's `createdBy` and `updatedBy` are the caller's `x-actor` header, when it gives one, else its token's name; the audit records both.
 
 **Errors:** `{code, message}`, where `code` is an AWS-style exception name such as `ValidationException` or `AccessDeniedException`.
@@ -18,8 +20,10 @@ Keeps the platform's secrets encrypted, and hands each agent session the ones gr
 ## Operations
 
 - [CreateGrant](#creategrant): Create a grant
+- [CreateSession](#createsession): Create session
 - [DeleteGrant](#deletegrant): Delete a grant
 - [DeleteSecret](#deletesecret): Delete a secret
+- [DeleteSession](#deletesession): Delete session
 - [GetHealth](#gethealth): Get health
 - [GetSecret](#getsecret): Get a secret
 - [ListAuditEvents](#listauditevents): List audit events
@@ -35,6 +39,7 @@ Keeps the platform's secrets encrypted, and hands each agent session the ones gr
 - [Grant](#grant)
 - [Health](#health)
 - [Secret](#secret)
+- [Session](#session)
 
 ---
 
@@ -119,7 +124,7 @@ The request failed validation.
 HTTP status: 400
 
 **UnauthorizedException**  
-No bearer token, or it is wrong or revoked.  
+No bearer token or session, or it is wrong, revoked or expired.  
 HTTP status: 401
 
 **AccessDeniedException**  
@@ -133,6 +138,51 @@ HTTP status: 404
 **ConflictException**  
 The target already has a grant that sets this variable.  
 HTTP status: 409
+
+---
+
+## CreateSession
+
+Signs a browser in: sets the `keyring_session` cookie (HttpOnly, Secure, SameSite=Lax), which every call but `/mcp` then takes in place of the bearer token, for 90 days or until `KEYRING_ADMIN_TOKEN` changes. Only `KEYRING_ADMIN_TOKEN` signs in. A write signed in by the cookie alone must also send `x-keyring: 1`.
+
+### Request syntax
+
+```http
+POST /api/session HTTP/1.1
+Authorization: Bearer token
+```
+
+### Response syntax
+
+```http
+HTTP/1.1 200
+Content-type: application/json
+
+{
+   "name": "admin",
+   "expiresAt": "string"
+}
+```
+
+### Response elements
+
+**name**  
+Whose session it is.  
+Type: String. Valid values: `admin`.
+
+**expiresAt**  
+When it ends (ISO 8601).  
+Type: String.
+
+### Errors
+
+**UnauthorizedException**  
+The bearer token is missing, wrong or revoked.  
+HTTP status: 401
+
+**AccessDeniedException**  
+The token is not `KEYRING_ADMIN_TOKEN`.  
+HTTP status: 403
 
 ---
 
@@ -202,7 +252,7 @@ The request failed validation.
 HTTP status: 400
 
 **UnauthorizedException**  
-No bearer token, or it is wrong or revoked.  
+No bearer token or session, or it is wrong, revoked or expired.  
 HTTP status: 401
 
 **AccessDeniedException**  
@@ -291,12 +341,52 @@ The request failed validation.
 HTTP status: 400
 
 **UnauthorizedException**  
-No bearer token, or it is wrong or revoked.  
+No bearer token or session, or it is wrong, revoked or expired.  
 HTTP status: 401
 
 **ResourceNotFoundException**  
 No secret has that name.  
 HTTP status: 404
+
+---
+
+## DeleteSession
+
+Signs the browser out: clears the cookie.
+
+### Request syntax
+
+```http
+DELETE /api/session HTTP/1.1
+Authorization: Bearer token
+```
+
+### Response syntax
+
+```http
+HTTP/1.1 200
+Content-type: application/json
+
+{
+   "ok": "true"
+}
+```
+
+### Response elements
+
+**ok**  
+Always true.  
+Type: Boolean.
+
+### Errors
+
+**ValidationException**  
+The request failed validation.  
+HTTP status: 400
+
+**UnauthorizedException**  
+No bearer token or session, or it is wrong, revoked or expired.  
+HTTP status: 401
 
 ---
 
@@ -415,7 +505,7 @@ The request failed validation.
 HTTP status: 400
 
 **UnauthorizedException**  
-No bearer token, or it is wrong or revoked.  
+No bearer token or session, or it is wrong, revoked or expired.  
 HTTP status: 401
 
 **ResourceNotFoundException**  
@@ -494,7 +584,7 @@ The request failed validation.
 HTTP status: 400
 
 **UnauthorizedException**  
-No bearer token, or it is wrong or revoked.  
+No bearer token or session, or it is wrong, revoked or expired.  
 HTTP status: 401
 
 ---
@@ -551,7 +641,7 @@ The request failed validation.
 HTTP status: 400
 
 **UnauthorizedException**  
-No bearer token, or it is wrong or revoked.  
+No bearer token or session, or it is wrong, revoked or expired.  
 HTTP status: 401
 
 **AccessDeniedException**  
@@ -604,7 +694,7 @@ The request failed validation.
 HTTP status: 400
 
 **UnauthorizedException**  
-No bearer token, or it is wrong or revoked.  
+No bearer token or session, or it is wrong, revoked or expired.  
 HTTP status: 401
 
 ---
@@ -701,7 +791,7 @@ The request failed validation.
 HTTP status: 400
 
 **UnauthorizedException**  
-No bearer token, or it is wrong or revoked.  
+No bearer token or session, or it is wrong, revoked or expired.  
 HTTP status: 401
 
 ---
@@ -762,7 +852,7 @@ The request failed validation.
 HTTP status: 400
 
 **UnauthorizedException**  
-No bearer token, or it is wrong or revoked.  
+No bearer token or session, or it is wrong, revoked or expired.  
 HTTP status: 401
 
 **AccessDeniedException**  
@@ -919,5 +1009,19 @@ Type: String. Required: Yes.
 
 **updatedAt**  
 Its current value put at (ISO 8601).  
+Type: String. Required: Yes.
+
+## Session
+
+A browser's sign-in.
+
+### Contents
+
+**name**  
+Whose session it is.  
+Type: String. Valid values: `admin`. Required: Yes.
+
+**expiresAt**  
+When it ends (ISO 8601).  
 Type: String. Required: Yes.
 

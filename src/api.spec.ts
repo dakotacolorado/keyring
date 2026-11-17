@@ -157,3 +157,62 @@ describe("the audit", () => {
     expect((await t.call("GET", "/api/audit?nextToken=zz")).status).toBe(400);
   });
 });
+
+describe("the page and its session", () => {
+  const cookieOf = (res: Response) => /keyring_session=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1];
+  const signIn = async (t: ReturnType<typeof setup>) => {
+    const res = await t.fetch("/api/session", { method: "POST", headers: t.bearer(ADMIN) });
+    return { res, cookie: `keyring_session=${cookieOf(res)}` };
+  };
+
+  it("serves the page at / and its files, and still the docs, without a token", async () => {
+    const t = setup();
+    const page = await t.fetch("/");
+    expect(page.status).toBe(200);
+    expect(page.headers.get("content-type")).toContain("text/html");
+    expect(await page.text()).toContain("<title>keyring</title>");
+    for (const path of ["/ui/app.js", "/ui/style.css", "/ui/banner.js", "/docs/api", "/docs/mcp"]) expect((await t.fetch(path)).status, path).toBe(200);
+  });
+
+  it("signs in only by the admin token, with a cookie that holds no token", async () => {
+    const t = setup();
+    for (const token of [AGENT, RESOLVER, "wrong"]) expect((await t.fetch("/api/session", { method: "POST", headers: t.bearer(token) })).status).toBe(token === "wrong" ? 401 : 403);
+    t.store.putToken("ops", "ops-secret", { admin: true, resolver: false }, new Date());
+    expect((await t.fetch("/api/session", { method: "POST", headers: t.bearer("ops-secret") })).status).toBe(403);
+    expect((await t.fetch("/api/session", { method: "POST" })).status).toBe(401);
+    const { res, cookie } = await signIn(t);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("set-cookie")).toMatch(/HttpOnly.*Secure.*SameSite=Lax/i);
+    expect(cookie).not.toContain(ADMIN);
+    expect((await t.fetch("/api/secrets", { headers: { cookie } })).status).toBe(200);
+    expect((await t.fetch("/api/secrets", { headers: { cookie: "keyring_session=forged" } })).status).toBe(401);
+    expect((await t.fetch("/mcp", { method: "POST", headers: { cookie } })).status).toBe(401);
+  });
+
+  it("refuses a write by the cookie alone without x-keyring, and audits one with it as person", async () => {
+    const t = setup();
+    const { cookie } = await signIn(t);
+    const put = (headers: Record<string, string>) => t.fetch("/api/secrets/PAGE", { method: "PUT", headers: { cookie, ...headers }, json: { value: VALUE } });
+    expect((await put({})).status).toBe(403);
+    expect((await put({ "x-keyring": "1", "x-actor": "person" })).status).toBe(201);
+    expect((await t.fetch("/api/secrets/PAGE", { method: "DELETE", headers: { cookie, "x-keyring": "1", "x-actor": "person" } })).status).toBe(200);
+    expect(t.store.events({ maxResults: 10 }).events.map((e) => [e.action, e.actor])).toEqual([["DeleteSecret", "person"], ["PutSecret", "person"]]);
+  });
+
+  it("lists hints only to the page's session", async () => {
+    const t = setup();
+    await t.put("A", VALUE);
+    const { cookie } = await signIn(t);
+    const text = await (await t.fetch("/api/secrets", { headers: { cookie } })).text();
+    expect(text).toContain("…6789");
+    expect(text).not.toContain(VALUE);
+  });
+
+  it("signs out, and the cookie dies with the admin token", async () => {
+    const t = setup();
+    const { cookie } = await signIn(t);
+    const out = await t.fetch("/api/session", { method: "DELETE", headers: { cookie, "x-keyring": "1" } });
+    expect(out.status).toBe(200);
+    expect(out.headers.get("set-cookie")).toMatch(/keyring_session=;/);
+  });
+});

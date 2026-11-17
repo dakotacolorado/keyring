@@ -3,7 +3,7 @@
   "info": {
     "version": "2026-11-17",
     "title": "keyring",
-    "description": "Keeps the platform's secrets encrypted, and hands each agent session the ones granted to it. **The person** and **agents** put the platform's secrets here (a Claude login, a GitHub token, an AWS credentials file) and grant each to the sessions that need it, as an environment variable. **agency** resolves a session's variables as it starts it, so no host keeps a copy.\n\n- **Secrets:** `PutSecret` seals a value with AES-256-GCM under the master key and keeps it as the secret's next version. `ListSecrets` and `GetSecret` answer metadata, with at most the value's last 4 characters; `DeleteSecret` removes it and its grants.\n- **Grants:** `CreateGrant` sets `variable` to a secret for `all`, `role:<name>`, `agent:<name>` or `label:<host label>`. Admin tokens only.\n- **Resolve:** `ResolveSecrets` answers `{variables}` for an agent, its role and its host's labels; the most specific grant of each variable wins. Resolver tokens only, and the only operation that answers a value.\n- **Audit:** `ListAuditEvents` lists every resolve and write, with names but never values.\n\n**Auth:** `Authorization: Bearer <token>` on everything but `GetHealth` and the docs. A token is made with `keyring token create <name>`; `--admin` lets it manage grants, `--resolver` lets it resolve. `KEYRING_ADMIN_TOKEN` is one more, named `admin`, an admin token that cannot resolve.\n\n**Who:** a write's `createdBy` and `updatedBy` are the caller's `x-actor` header, when it gives one, else its token's name; the audit records both.\n\n**Errors:** `{code, message}`, where `code` is an AWS-style exception name such as `ValidationException` or `AccessDeniedException`."
+    "description": "Keeps the platform's secrets encrypted, and hands each agent session the ones granted to it. **The person** and **agents** put the platform's secrets here (a Claude login, a GitHub token, an AWS credentials file) and grant each to the sessions that need it, as an environment variable. **agency** resolves a session's variables as it starts it, so no host keeps a copy.\n\n- **Secrets:** `PutSecret` seals a value with AES-256-GCM under the master key and keeps it as the secret's next version. `ListSecrets` and `GetSecret` answer metadata, with at most the value's last 4 characters; `DeleteSecret` removes it and its grants.\n- **Grants:** `CreateGrant` sets `variable` to a secret for `all`, `role:<name>`, `agent:<name>` or `label:<host label>`. Admin tokens only.\n- **Resolve:** `ResolveSecrets` answers `{variables}` for an agent, its role and its host's labels; the most specific grant of each variable wins. Resolver tokens only, and the only operation that answers a value.\n- **Audit:** `ListAuditEvents` lists every resolve and write, with names but never values.\n\n**Auth:** `Authorization: Bearer <token>` on everything but `GetHealth` and the docs. A token is made with `keyring token create <name>`; `--admin` lets it manage grants, `--resolver` lets it resolve. `KEYRING_ADMIN_TOKEN` is one more, named `admin`, an admin token that cannot resolve.\n\n**Page:** `/` is keyring's own page, signed in by `#signin=<KEYRING_ADMIN_TOKEN>`: `CreateSession` turns the token into a cookie, which every call but `/mcp` then takes, a write by it needing `x-keyring: 1`. The page lists, puts and deletes secrets and grants, and never shows a value.\n\n**Who:** a write's `createdBy` and `updatedBy` are the caller's `x-actor` header, when it gives one, else its token's name; the audit records both.\n\n**Errors:** `{code, message}`, where `code` is an AWS-style exception name such as `ValidationException` or `AccessDeniedException`."
   },
   "tags": [
     {
@@ -23,6 +23,10 @@
       "description": "What was resolved and written, without values."
     },
     {
+      "name": "Sessions",
+      "description": "Signing a browser in, for keyring's own page."
+    },
+    {
       "name": "Platform",
       "description": "Health."
     }
@@ -33,6 +37,12 @@
         "type": "http",
         "scheme": "bearer",
         "description": "A named token from `keyring token create`, or `KEYRING_ADMIN_TOKEN`."
+      },
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "keyring_session",
+        "description": "A browser's session, from `CreateSession`. A write signed in by it alone must also send `x-keyring: 1`."
       }
     },
     "schemas": {
@@ -59,6 +69,68 @@
           "ok",
           "version",
           "commit"
+        ]
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "admin"
+            ],
+            "description": "Whose session it is."
+          },
+          "expiresAt": {
+            "type": "string",
+            "description": "When it ends (ISO 8601)."
+          }
+        },
+        "required": [
+          "name",
+          "expiresAt"
+        ],
+        "description": "A browser's sign-in."
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "ValidationException",
+              "UnauthorizedException",
+              "AccessDeniedException",
+              "ResourceNotFoundException",
+              "ConflictException",
+              "InternalServerException"
+            ],
+            "description": "Exception name."
+          },
+          "message": {
+            "type": "string",
+            "description": "What went wrong."
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "description": "Every error's body."
+      },
+      "DeleteSessionResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "Always true."
+          }
+        },
+        "required": [
+          "ok"
         ]
       },
       "Secret": {
@@ -117,32 +189,6 @@
           "updatedAt"
         ],
         "description": "A secret, without its value: only `ResolveSecrets` answers a value."
-      },
-      "Error": {
-        "type": "object",
-        "properties": {
-          "code": {
-            "type": "string",
-            "enum": [
-              "ValidationException",
-              "UnauthorizedException",
-              "AccessDeniedException",
-              "ResourceNotFoundException",
-              "ConflictException",
-              "InternalServerException"
-            ],
-            "description": "Exception name."
-          },
-          "message": {
-            "type": "string",
-            "description": "What went wrong."
-          }
-        },
-        "required": [
-          "code",
-          "message"
-        ],
-        "description": "Every error's body."
       },
       "PutSecretInput": {
         "type": "object",
@@ -452,11 +498,106 @@
         }
       }
     },
+    "/api/session": {
+      "post": {
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Sessions"
+        ],
+        "operationId": "CreateSession",
+        "summary": "Create session",
+        "description": "Signs a browser in: sets the `keyring_session` cookie (HttpOnly, Secure, SameSite=Lax), which every call but `/mcp` then takes in place of the bearer token, for 90 days or until `KEYRING_ADMIN_TOKEN` changes. Only `KEYRING_ADMIN_TOKEN` signs in. A write signed in by the cookie alone must also send `x-keyring: 1`.",
+        "responses": {
+          "200": {
+            "description": "Signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedException: The bearer token is missing, wrong or revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "AccessDeniedException: The token is not `KEYRING_ADMIN_TOKEN`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "tags": [
+          "Sessions"
+        ],
+        "operationId": "DeleteSession",
+        "summary": "Delete session",
+        "description": "Signs the browser out: clears the cookie.",
+        "responses": {
+          "200": {
+            "description": "Signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteSessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationException: The request failed validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedException: No bearer token or session, or it is wrong, revoked or expired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/secrets/{name}": {
       "put": {
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
           }
         ],
         "tags": [
@@ -521,7 +662,7 @@
             }
           },
           "401": {
-            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "description": "UnauthorizedException: No bearer token or session, or it is wrong, revoked or expired.",
             "content": {
               "application/json": {
                 "schema": {
@@ -536,6 +677,9 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
           }
         ],
         "tags": [
@@ -580,7 +724,7 @@
             }
           },
           "401": {
-            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "description": "UnauthorizedException: No bearer token or session, or it is wrong, revoked or expired.",
             "content": {
               "application/json": {
                 "schema": {
@@ -605,6 +749,9 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
           }
         ],
         "tags": [
@@ -649,7 +796,7 @@
             }
           },
           "401": {
-            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "description": "UnauthorizedException: No bearer token or session, or it is wrong, revoked or expired.",
             "content": {
               "application/json": {
                 "schema": {
@@ -676,6 +823,9 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
           }
         ],
         "tags": [
@@ -706,7 +856,7 @@
             }
           },
           "401": {
-            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "description": "UnauthorizedException: No bearer token or session, or it is wrong, revoked or expired.",
             "content": {
               "application/json": {
                 "schema": {
@@ -723,6 +873,9 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
           }
         ],
         "tags": [
@@ -763,7 +916,7 @@
             }
           },
           "401": {
-            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "description": "UnauthorizedException: No bearer token or session, or it is wrong, revoked or expired.",
             "content": {
               "application/json": {
                 "schema": {
@@ -808,6 +961,9 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
           }
         ],
         "tags": [
@@ -864,7 +1020,7 @@
             }
           },
           "401": {
-            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "description": "UnauthorizedException: No bearer token or session, or it is wrong, revoked or expired.",
             "content": {
               "application/json": {
                 "schema": {
@@ -891,6 +1047,9 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
           }
         ],
         "tags": [
@@ -934,7 +1093,7 @@
             }
           },
           "401": {
-            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "description": "UnauthorizedException: No bearer token or session, or it is wrong, revoked or expired.",
             "content": {
               "application/json": {
                 "schema": {
@@ -971,6 +1130,9 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
           }
         ],
         "tags": [
@@ -1011,7 +1173,7 @@
             }
           },
           "401": {
-            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "description": "UnauthorizedException: No bearer token or session, or it is wrong, revoked or expired.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1038,6 +1200,9 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
           }
         ],
         "tags": [
@@ -1122,7 +1287,7 @@
             }
           },
           "401": {
-            "description": "UnauthorizedException: No bearer token, or it is wrong or revoked.",
+            "description": "UnauthorizedException: No bearer token or session, or it is wrong, revoked or expired.",
             "content": {
               "application/json": {
                 "schema": {

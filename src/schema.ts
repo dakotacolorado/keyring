@@ -88,11 +88,11 @@ const fails = (status: ErrorStatus, cause: string) => json(ErrorSchema, `${ERROR
 
 const FAILS = {
   400: fails(400, "The request failed validation."),
-  401: fails(401, "No bearer token, or it is wrong or revoked."),
+  401: fails(401, "No bearer token or session, or it is wrong, revoked or expired."),
 };
 const ADMIN_ONLY = { 403: fails(403, "The token is not an admin token.") };
 const NO_SECRET = { 404: fails(404, "No secret has that name.") };
-const security: Record<string, string[]>[] = [{ bearerAuth: [] }];
+const security: Record<string, string[]>[] = [{ bearerAuth: [] }, { sessionCookie: [] }];
 const secrets = { security, tags: ["Secrets"] };
 const grants = { security, tags: ["Grants"] };
 
@@ -130,6 +130,33 @@ export const AuditQuery = z.object({
 });
 
 // --- routes -----------------------------------------------------------------
+
+export const createSessionRoute = createRoute({
+  security: [{ bearerAuth: [] }],
+  tags: ["Sessions"],
+  method: "post",
+  path: "/api/session",
+  operationId: "CreateSession",
+  summary: "Create session",
+  description:
+    "Signs a browser in: sets the `keyring_session` cookie (HttpOnly, Secure, SameSite=Lax), which every call but `/mcp` then takes in place of the bearer token, for 90 days or until `KEYRING_ADMIN_TOKEN` changes. Only `KEYRING_ADMIN_TOKEN` signs in. A write signed in by the cookie alone must also send `x-keyring: 1`.",
+  responses: {
+    200: json(z.object({ name: z.literal("admin").describe("Whose session it is."), expiresAt: z.string().describe("When it ends (ISO 8601).") }).describe("A browser's sign-in.").openapi("Session"), "Signed in."),
+    401: fails(401, "The bearer token is missing, wrong or revoked."),
+    403: fails(403, "The token is not `KEYRING_ADMIN_TOKEN`."),
+  },
+});
+
+export const deleteSessionRoute = createRoute({
+  security: [{ sessionCookie: [] }],
+  tags: ["Sessions"],
+  method: "delete",
+  path: "/api/session",
+  operationId: "DeleteSession",
+  summary: "Delete session",
+  description: "Signs the browser out: clears the cookie.",
+  responses: { 200: json(z.object({ ok: z.literal(true).describe("Always true.") }).openapi("DeleteSessionResponse"), "Signed out."), ...FAILS },
+});
 
 export const healthRoute = createRoute({
   method: "get",

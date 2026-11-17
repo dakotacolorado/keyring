@@ -61,6 +61,12 @@ Each token is printed once.
 
 ## Use it
 
+Open the server's address in a browser for its Secrets page: sign in with
+`https://<address>/#signin=<KEYRING_ADMIN_TOKEN>`. From it you add, replace
+and delete secrets and add and revoke grants. It shows a secret's name,
+version and last 4 characters, never its value, and its writes are audited
+as `person`. Only `KEYRING_ADMIN_TOKEN` signs in.
+
 The API reference is served at `/docs/api` (and is
 [docs/API.md](docs/API.md), from [openapi.json](openapi.json)); the MCP
 server's at `/docs/mcp` ([docs/MCP.md](docs/MCP.md), from
